@@ -1,0 +1,71 @@
+{
+  "name": "q-image-compressor",
+  "version": "1.0.0",
+  "description": "image compress tools for qian",
+  "keywords": ["image", "compress", "qian","compressor","image-compressor"],
+  "author": "Qian <xuqssq@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xuqssq/image-compress.git"
+  },
+  "license": "MIT",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "main": "./dist/index.mjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "*": [
+        "./dist/*",
+        "./dist/index.d.ts"
+      ]
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "bin": {
+    "q-image-compressor": "scripts/compress.mjs"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "node --watch-path=src dist/index.mjs",
+    "release": "nrm use npm && npm publish",
+    "lint": "eslint . --ext .js,.ts",
+    "lint:fix": "eslint . --ext .js,.ts --fix",
+    "build": "unbuild",
+    "build:dev": "unbuild --stub --watch",
+    "prepare": "simple-git-hooks"
+  },
+  "devDependencies": {
+    "@types/node": "^24.1.0",
+    "@typescript-eslint/eslint-plugin": "^6.15.0",
+    "@typescript-eslint/parser": "^6.15.0",
+    "eslint": "^8.56.0",
+    "lint-staged": "^15.2.0",
+    "nrm": "^1.2.6",
+    "simple-git-hooks": "^2.9.0",
+    "tsx": "^4.6.2",
+    "typescript": "^5.3.3",
+    "unbuild": "^2.0.0"
+  },
+  "simple-git-hooks": {
+    "pre-commit": "pnpm lint-staged"
+  },
+  "lint-staged": {
+    "*.{js,ts}": "eslint --fix"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "sharp": "^0.34.3"
+  }
+}
