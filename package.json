@@ -1,6 +1,6 @@
 {
   "name": "q-image-compressor",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "image compress tools for qian",
   "keywords": ["image", "compress", "qian","compressor","image-compressor"],
   "author": "Qian <xuqssq@gmail.com>",

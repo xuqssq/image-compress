@@ -30,10 +30,10 @@ async function cli() {
   if (!directory) {
     console.error('\n❌ 错误：请指定要优化的图片目录\n')
     console.error('使用方法:')
-    console.error('  yarn start -dir=public')
-    console.error('  yarn start --dir=public')
-    console.error('  yarn start -dir public')
-    console.error('  yarn start --dir public\n')
+    console.error('  npx q-image-compressor -dir=public')
+    console.error('  npx q-image-compressor --dir=public')
+    console.error('  npx q-image-compressor -dir public')
+    console.error('  npx q-image-compressor --dir public\n')
     process.exit(1)
   }
 
