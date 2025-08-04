@@ -1,8 +1,0 @@
-# 允许所有搜索引擎访问整个网站
-User-agent: *
-
-# 阻止爬取敏感或无关内容路径
-Disallow: /api/
-Disallow: /NVIDIA.pdf
-Disallow: /cdn-cgi/
-
