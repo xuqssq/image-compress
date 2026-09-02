@@ -1,6 +1,6 @@
 {
   "name": "q-image-compressor",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Quality-gated recursive image optimizer for JPEG, PNG, WebP, GIF and AVIF",
   "keywords": [
     "image",
