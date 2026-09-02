@@ -14,5 +14,5 @@ export default defineBuildConfig({
       minify: true
     }
   },
-  externals: ['sharp']
+  externals: ['@napi-rs/image', 'chalk', 'consola']
 })

@@ -1,7 +1,7 @@
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import sharp from 'sharp'
+import { Transformer } from '@napi-rs/image'
 
 const temporaryDirectories: string[] = []
 
@@ -17,137 +17,72 @@ export async function cleanupTemporaryDirectories(): Promise<void> {
   )
 }
 
-export async function createNoiseImage(
-  filePath: string,
-  format: 'jpeg' | 'png' | 'webp' | 'gif' | 'avif',
-  width = 320,
-  height = 240
-): Promise<void> {
-  await mkdir(path.dirname(filePath), { recursive: true })
-
-  const pixels = Buffer.allocUnsafe(width * height * 3)
+function createPixels(width: number, height: number): Buffer {
+  const pixels = Buffer.allocUnsafe(width * height * 4)
   let state = 0x12345678
 
-  for (let index = 0; index < pixels.length; index += 1) {
-    state = (1664525 * state + 1013904223) >>> 0
-    pixels[index] = state >>> 24
-  }
-
-  const image = sharp(pixels, { raw: { width, height, channels: 3 } })
-
-  if (format === 'jpeg') {
-    await image.jpeg({ quality: 98, chromaSubsampling: '4:4:4' }).toFile(filePath)
-    return
-  }
-
-  if (format === 'png') {
-    await image.png({ compressionLevel: 0 }).toFile(filePath)
-    return
-  }
-
-  if (format === 'webp') {
-    await image.webp({ quality: 98, smartSubsample: true }).toFile(filePath)
-    return
-  }
-
-  if (format === 'gif') {
-    await image.gif({ effort: 10, dither: 0 }).toFile(filePath)
-    return
-  }
-
-  await image.avif({ quality: 98, effort: 4, chromaSubsampling: '4:4:4' }).toFile(filePath)
-}
-
-export async function createAnimatedImage(
-  filePath: string,
-  format: 'gif' | 'webp'
-): Promise<void> {
-  await mkdir(path.dirname(filePath), { recursive: true })
-  const frames = await Promise.all(
-    ['#ff3366', '#3366ff'].map((background) =>
-      sharp({ create: { width: 32, height: 24, channels: 4, background } })
-        .png()
-        .toBuffer()
-    )
-  )
-  const image = sharp(frames, { join: { animated: true } })
-
-  if (format === 'gif') {
-    await image
-      .gif({ delay: [80, 120], loop: 2, effort: 1, keepDuplicateFrames: true })
-      .toFile(filePath)
-    return
-  }
-
-  await image
-    .webp({ delay: [80, 120], loop: 2, lossless: true, effort: 0 })
-    .toFile(filePath)
-}
-
-export async function createGradientJpeg(
-  filePath: string,
-  quality = 80,
-  orientation?: number,
-  xmp?: string,
-  imageDescription?: string
-): Promise<void> {
-  const width = 640
-  const height = 400
-  const pixels = Buffer.allocUnsafe(width * height * 3)
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
-      const offset = (y * width + x) * 3
-      pixels[offset] = Math.round((x / width) * 255)
-      pixels[offset + 1] = Math.round((y / height) * 255)
-      pixels[offset + 2] = Math.round(((x + y) / (width + height)) * 255)
+      const offset = (y * width + x) * 4
+      state = (1664525 * state + 1013904223) >>> 0
+      const noise = (state >>> 28) - 8
+      pixels[offset] = Math.max(0, Math.min(255, Math.round((x / width) * 255) + noise))
+      pixels[offset + 1] = Math.max(0, Math.min(255, Math.round((y / height) * 255) + noise))
+      pixels[offset + 2] = Math.max(
+        0,
+        Math.min(255, Math.round(((x + y) / (width + height)) * 255) + noise)
+      )
+      pixels[offset + 3] = 255
     }
   }
 
-  let image = sharp(pixels, { raw: { width, height, channels: 3 } }).jpeg({
-    quality,
-    chromaSubsampling: '4:4:4'
-  })
-  if (orientation !== undefined) image = image.withMetadata({ orientation })
-  if (xmp !== undefined) image = image.withXmp(xmp)
-  if (imageDescription !== undefined) {
-    image = image.withExifMerge({ IFD0: { ImageDescription: imageDescription } })
-  }
-  await image.toFile(filePath)
+  return pixels
 }
 
-export async function createCheckerboardJpeg(filePath: string): Promise<void> {
-  const width = 640
-  const height = 480
-  const pixels = Buffer.allocUnsafe(width * height * 3)
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const value = (Math.floor(x / 4) + Math.floor(y / 4)) % 2 === 0 ? 32 : 224
-      const offset = (y * width + x) * 3
-      pixels[offset] = value
-      pixels[offset + 1] = value
-      pixels[offset + 2] = value
-    }
-  }
-  await sharp(pixels, { raw: { width, height, channels: 3 } })
-    .jpeg({ quality: 100, chromaSubsampling: '4:4:4' })
-    .toFile(filePath)
-}
+export type EncodableFormat =
+  | 'jpeg'
+  | 'png'
+  | 'bmp'
+  | 'ico'
+  | 'tiff'
+  | 'pnm'
+  | 'webp'
+  | 'avif'
 
-export async function createSixteenBitPng(filePath: string): Promise<void> {
+export async function createImage(
+  filePath: string,
+  format: EncodableFormat,
+  width = 320,
+  height = 240,
+  quality = 98
+): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true })
-  await sharp({ create: { width: 128, height: 96, channels: 3, background: '#808080' } })
-    .toColourspace('rgb16')
-    .linear(1.001, 1)
-    .png({ compressionLevel: 0 })
-    .toFile(filePath)
+  const transformer = Transformer.fromRgbaPixels(createPixels(width, height), width, height)
+  let output: Buffer
+
+  if (format === 'jpeg') output = await transformer.jpeg(quality)
+  else if (format === 'png') output = await transformer.png()
+  else if (format === 'webp') output = await transformer.webp(quality)
+  else if (format === 'avif') output = await transformer.avif({ quality, speed: 4, threads: 2 })
+  else output = await transformer[format]()
+
+  await writeFile(filePath, output)
+}
+
+export async function createUnsupportedFile(
+  filePath: string,
+  contents = 'unsupported fixture'
+): Promise<void> {
+  await mkdir(path.dirname(filePath), { recursive: true })
+  await writeFile(filePath, contents)
+}
+
+export async function metadata(filePath: string) {
+  return new Transformer(await readFile(filePath)).metadata(true)
 }
 
 export async function decodedPixels(filePath: string): Promise<Buffer> {
-  return sharp(filePath).ensureAlpha().raw().toBuffer()
-}
-
-export async function decodedAnimatedPixels(filePath: string): Promise<Buffer> {
-  return sharp(filePath, { animated: true }).ensureAlpha().raw().toBuffer()
+  return new Transformer(await readFile(filePath)).rawPixels()
 }
 
 export async function fileBytes(filePath: string): Promise<Buffer> {

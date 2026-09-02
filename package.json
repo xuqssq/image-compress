@@ -1,6 +1,6 @@
 {
   "name": "q-image-compressor",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Quality-gated recursive image optimizer for JPEG, PNG, WebP, GIF and AVIF",
   "keywords": [
     "image",
@@ -77,9 +77,8 @@
     "node": ">=18.17.0"
   },
   "dependencies": {
+    "@napi-rs/image": "^1.14.0",
     "chalk": "^5.6.2",
-    "consola": "^3.4.2",
-    "sharp": "^0.35.4",
-    "ssim.js": "^3.5.0"
+    "consola": "^3.4.2"
   }
 }

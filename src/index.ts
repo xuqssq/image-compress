@@ -2,16 +2,16 @@ import { constants } from 'node:fs'
 import { access, readdir, stat } from 'node:fs/promises'
 import { availableParallelism } from 'node:os'
 import path from 'node:path'
+import { resolveMaxQuality } from './config'
 import { Logger } from './logger'
 import { MemoryBudget } from './memory-budget'
-import { optimizeImage } from './optimizer'
+import { IMAGE_EXTENSIONS, optimizeImage } from './optimizer'
 import type {
   CompressionOptions,
   CompressionResult,
   FileCompressionResult
 } from './types'
 
-const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif'])
 const BYTES_PER_MEGABYTE = 1024 * 1024
 const MAX_CONCURRENCY = 16
 
@@ -89,6 +89,7 @@ export async function compressImages(options: CompressionOptions): Promise<Compr
   if (profile !== 'max' && profile !== 'balanced') {
     throw new TypeError("profile 必须是 'max' 或 'balanced'")
   }
+  const maxQuality = resolveMaxQuality()
   logger.start(options.directory)
 
   try {
@@ -107,7 +108,7 @@ export async function compressImages(options: CompressionOptions): Promise<Compr
   const imageFiles = await collectImageFiles(directory)
   const memoryBudget = new MemoryBudget()
   const results = await mapWithConcurrency(imageFiles, concurrency, async (filePath) => {
-    const result = await optimizeImage(filePath, memoryBudget, profile)
+    const result = await optimizeImage(filePath, memoryBudget, { profile, maxQuality })
     logger.file(directory, result)
     return result
   })
