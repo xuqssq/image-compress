@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict'
+import { execFile } from 'node:child_process'
+import { symlink } from 'node:fs/promises'
 import { describe, it } from 'node:test'
+import path from 'node:path'
+import { promisify } from 'node:util'
 import { formatHelp, parseArguments, runCli } from '../scripts/compress.mjs'
+import { cleanupTemporaryDirectories, createTemporaryDirectory } from './helpers'
+
+const runFile = promisify(execFile)
 
 describe('CLI arguments', () => {
   it('preserves every documented legacy directory syntax', () => {
@@ -72,6 +79,22 @@ describe('CLI arguments', () => {
       assert.deepEqual(messages, [])
     } finally {
       console.error = originalError
+    }
+  })
+
+  it('runs when launched through an npm-style bin symlink', async () => {
+    const directory = await createTemporaryDirectory()
+    const binPath = path.join(directory, 'q-image-compressor')
+    await symlink(path.resolve('scripts/compress.mjs'), binPath)
+
+    try {
+      const { stdout } = await runFile(process.execPath, [binPath, '--no-color', '--help'], {
+        env: { ...process.env, NO_COLOR: '1' }
+      })
+      assert.match(stdout, /图片批量压缩工具/)
+      assert.match(stdout, /q-image-compressor --dir/)
+    } finally {
+      await cleanupTemporaryDirectories()
     }
   })
 })

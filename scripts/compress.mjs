@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /* eslint-env node */
-import { pathToFileURL } from 'node:url'
+import { realpathSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { Chalk, supportsColorStderr } from 'chalk'
 import { createConsola } from 'consola'
 
@@ -130,8 +131,17 @@ export async function runCli(
   }
 }
 
-const entryUrl = process.argv[1] ? pathToFileURL(process.argv[1]).href : undefined
-if (entryUrl === import.meta.url) {
+export function isDirectExecution(entryPath = process.argv[1]) {
+  if (!entryPath) return false
+
+  try {
+    return realpathSync(entryPath) === realpathSync(fileURLToPath(import.meta.url))
+  } catch {
+    return false
+  }
+}
+
+if (isDirectExecution()) {
   runCli().then((exitCode) => {
     process.exitCode = exitCode
   })
