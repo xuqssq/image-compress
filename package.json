@@ -1,8 +1,14 @@
 {
   "name": "q-image-compressor",
   "version": "1.0.1",
-  "description": "image compress tools for qian",
-  "keywords": ["image", "compress", "qian","compressor","image-compressor"],
+  "description": "Quality-gated recursive image optimizer for JPEG, PNG, WebP, GIF and AVIF",
+  "keywords": [
+    "image",
+    "compress",
+    "qian",
+    "compressor",
+    "image-compressor"
+  ],
   "author": "Qian <xuqssq@gmail.com>",
   "repository": {
     "type": "git",
@@ -17,7 +23,7 @@
       "require": "./dist/index.cjs"
     }
   },
-  "main": "./dist/index.mjs",
+  "main": "./dist/index.cjs",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
   "typesVersions": {
@@ -29,17 +35,22 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "scripts/compress.mjs"
   ],
   "bin": {
-    "q-image-compressor": "scripts/compress.mjs"
+    "q-image-compressor": "scripts/compress.mjs",
+    "image-compress": "scripts/compress.mjs"
   },
   "scripts": {
-    "start": "tsx src/index.ts",
-    "dev": "node --watch-path=src dist/index.mjs",
-    "release": "nrm use npm && npm publish",
-    "lint": "eslint . --ext .js,.ts",
-    "lint:fix": "eslint . --ext .js,.ts --fix",
+    "start": "yarn build && node scripts/compress.mjs",
+    "dev": "unbuild --stub --watch",
+    "test": "tsx --test test/**/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "prepack": "yarn build",
+    "release": "yarn test && yarn typecheck && yarn lint && yarn build && nrm use npm && npm publish",
+    "lint": "eslint . --ext .js,.mjs,.ts",
+    "lint:fix": "eslint . --ext .js,.mjs,.ts --fix",
     "build": "unbuild",
     "build:dev": "unbuild --stub --watch",
     "prepare": "simple-git-hooks"
@@ -60,12 +71,15 @@
     "pre-commit": "pnpm lint-staged"
   },
   "lint-staged": {
-    "*.{js,ts}": "eslint --fix"
+    "*.{js,mjs,ts}": "eslint --fix"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18.17.0"
   },
   "dependencies": {
-    "sharp": "^0.34.3"
+    "chalk": "^5.6.2",
+    "consola": "^3.4.2",
+    "sharp": "^0.35.4",
+    "ssim.js": "^3.5.0"
   }
 }

@@ -1,48 +1,138 @@
 #!/usr/bin/env node
-import { compressImages } from '../dist/index.cjs'
+/* eslint-env node */
+import { pathToFileURL } from 'node:url'
+import { Chalk, supportsColorStderr } from 'chalk'
+import { createConsola } from 'consola'
 
-// 解析命令行参数
-function getDirectoryFromArgs() {
-  const args = process.argv.slice(2)
-  let directory = null
+function readValue(args, index, argument) {
+  const separator = argument.indexOf('=')
+  if (separator !== -1) return { value: argument.slice(separator + 1), consumed: 0 }
 
-  for (const arg of args) {
-    // 支持 --dir=public 或 -dir=public 格式
-    if (arg.startsWith('--dir=') || arg.startsWith('-dir=')) {
-      directory = arg.split('=')[1]
-      break
-    }
-    // 也支持 --dir public 或 -dir public 格式
-    const index = args.indexOf(arg)
-    if ((arg === '--dir' || arg === '-dir') && args[index + 1]) {
-      directory = args[index + 1]
-      break
-    }
-  }
-
-  return directory
+  const value = args[index + 1]
+  if (!value || value.startsWith('-')) throw new Error(`参数 ${argument} 缺少值`)
+  return { value, consumed: 1 }
 }
 
-// 命令行入口函数
-async function cli() {
-  const directory = getDirectoryFromArgs()
+export function parseArguments(args) {
+  const options = { silent: false }
+  let help = false
 
-  if (!directory) {
-    console.error('\n❌ 错误：请指定要优化的图片目录\n')
-    console.error('使用方法:')
-    console.error('  npx q-image-compressor -dir=public')
-    console.error('  npx q-image-compressor --dir=public')
-    console.error('  npx q-image-compressor -dir public')
-    console.error('  npx q-image-compressor --dir public\n')
-    process.exit(1)
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]
+
+    if (argument === '--help' || argument === '-h') {
+      help = true
+      continue
+    }
+    if (argument === '--silent' || argument === '-s') {
+      options.silent = true
+      continue
+    }
+    if (argument === '--no-color') {
+      options.color = false
+      continue
+    }
+    if (
+      argument === '--dir' ||
+      argument === '-dir' ||
+      argument === '-d' ||
+      argument.startsWith('--dir=') ||
+      argument.startsWith('-dir=') ||
+      argument.startsWith('-d=')
+    ) {
+      const { value, consumed } = readValue(args, index, argument)
+      options.directory = value
+      index += consumed
+      continue
+    }
+    if (argument === '--concurrency' || argument.startsWith('--concurrency=')) {
+      const { value, consumed } = readValue(args, index, argument)
+      const concurrency = Number(value)
+      if (!Number.isInteger(concurrency) || concurrency < 1) {
+        throw new Error('--concurrency 必须是大于 0 的整数')
+      }
+      options.concurrency = concurrency
+      index += consumed
+      continue
+    }
+    if (argument === '--profile' || argument.startsWith('--profile=')) {
+      const { value, consumed } = readValue(args, index, argument)
+      if (value !== 'max' && value !== 'balanced') {
+        throw new Error('--profile 必须是 max 或 balanced')
+      }
+      options.profile = value
+      index += consumed
+      continue
+    }
+
+    throw new Error(`未知参数: ${argument}`)
   }
+
+  return { help, options }
+}
+
+export function formatHelp(color = false) {
+  const style = new Chalk({ level: color ? 3 : 0 })
+  const command = style.cyan('q-image-compressor')
+  return [
+    style.bold('图片批量压缩工具'),
+    '',
+    `用法: ${command} --dir <目录> [选项]`,
+    '',
+    '选项:',
+    '  -d, -dir, --dir <目录>    要递归处理的图片目录',
+    '  -s, --silent              关闭所有日志',
+    '      --no-color            关闭 ANSI 彩色输出',
+    '      --concurrency <数量>  并行处理的文件数（默认最多 4）',
+    '      --profile <档位>      max（默认）或 balanced',
+    '  -h, --help                显示帮助',
+    '',
+    '兼容写法:',
+    `  ${command} -dir=public`,
+    `  ${command} --dir=public`,
+    `  ${command} -dir public`,
+    `  ${command} --dir public`
+  ].join('\n')
+}
+
+export async function runCli(
+  args = process.argv.slice(2),
+  loadCompressor = () => import('../dist/index.mjs')
+) {
+  const silent = args.includes('--silent') || args.includes('-s')
+  const autoColor = Boolean(supportsColorStderr)
+  let color = autoColor && !args.includes('--no-color')
+  let logger = createConsola({ level: silent ? -999 : 3, fancy: true })
 
   try {
-    await compressImages({ directory })
-  } catch (err) {
-    process.exit(1)
+    const { help, options } = parseArguments(args)
+    color = options.color ?? autoColor
+    logger = createConsola({
+      level: silent ? -999 : 3,
+      fancy: true,
+      formatOptions: { colors: color, compact: true, date: false }
+    })
+    if (help) {
+      logger.log(formatHelp(color))
+      return 0
+    }
+    if (!options.directory) throw new Error('请指定要优化的图片目录')
+
+    const { compressImages } = await loadCompressor()
+    await compressImages(options)
+    return 0
+  } catch (error) {
+    if (silent) return 1
+    const message = error instanceof Error ? error.message : String(error)
+    logger.error(message)
+    logger.log(formatHelp(color))
+    return 1
   }
 }
 
-// 执行命令行
-cli().catch(console.error)
+const entryUrl = process.argv[1] ? pathToFileURL(process.argv[1]).href : undefined
+if (entryUrl === import.meta.url) {
+  runCli().then((exitCode) => {
+    process.exitCode = exitCode
+  })
+}

@@ -1,360 +1,120 @@
-import sharp from 'sharp'
-import path from 'path'
-import fs from 'fs'
+import { constants } from 'node:fs'
+import { access, readdir, stat } from 'node:fs/promises'
+import { availableParallelism } from 'node:os'
+import path from 'node:path'
+import { Logger } from './logger'
+import { MemoryBudget } from './memory-budget'
+import { optimizeImage } from './optimizer'
+import type {
+  CompressionOptions,
+  CompressionResult,
+  FileCompressionResult
+} from './types'
 
-// 压缩结果接口
-interface CompressionResult {
-  totalFiles: number
-  compressedFiles: number
-  skippedFiles: number
-  failedFiles: number
-  totalOriginalSize: number
-  totalCompressedSize: number
-  savedSize: number
-  savedPercentage: number
-  timeTaken: number
+const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif'])
+const BYTES_PER_MEGABYTE = 1024 * 1024
+const MAX_CONCURRENCY = 16
+
+async function collectImageFiles(directory: string): Promise<string[]> {
+  const entries = await readdir(directory, { withFileTypes: true })
+  const files: string[] = []
+
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    const filePath = path.join(directory, entry.name)
+    if (entry.isDirectory()) {
+      files.push(...(await collectImageFiles(filePath)))
+    } else if (entry.isFile() && IMAGE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
+      files.push(filePath)
+    }
+  }
+
+  return files
 }
 
-// 压缩配置接口
-interface CompressionOptions {
-  directory: string
-  silent?: boolean  // 是否静默模式（不输出日志）
+function resolveConcurrency(requested?: number): number {
+  if (requested !== undefined && (!Number.isInteger(requested) || requested < 1)) {
+    throw new TypeError('concurrency 必须是大于 0 的整数')
+  }
+
+  return Math.min(requested ?? Math.max(1, Math.min(availableParallelism(), 4)), MAX_CONCURRENCY)
 }
 
-// 支持的图片格式
-const imageExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif']
+async function mapWithConcurrency<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  operation: (value: T) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(values.length)
+  let nextIndex = 0
 
-// 压缩统计
-let totalFiles = 0
-let compressedFiles = 0
-let skippedFiles = 0
-let totalOriginalSize = 0
-let totalCompressedSize = 0
-let isSilent = false
+  async function worker(): Promise<void> {
+    while (nextIndex < values.length) {
+      const index = nextIndex
+      nextIndex += 1
+      results[index] = await operation(values[index])
+    }
+  }
 
-// 日志输出函数（支持静默模式）
-function log(...args: any[]) {
-  if (!isSilent) {
-    console.log(...args)
+  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, () => worker()))
+  return results
+}
+
+function summarize(results: FileCompressionResult[], timeTaken: number): CompressionResult {
+  const totalOriginalBytes = results.reduce((sum, result) => sum + result.originalBytes, 0)
+  const totalCompressedBytes = results.reduce((sum, result) => sum + result.finalBytes, 0)
+  const savedBytes = totalOriginalBytes - totalCompressedBytes
+
+  return {
+    totalFiles: results.length,
+    compressedFiles: results.filter(({ status }) => status === 'compressed').length,
+    skippedFiles: results.filter(({ status }) => status === 'skipped').length,
+    failedFiles: results.filter(({ status }) => status === 'failed').length,
+    totalOriginalSize: totalOriginalBytes / BYTES_PER_MEGABYTE,
+    totalCompressedSize: totalCompressedBytes / BYTES_PER_MEGABYTE,
+    savedSize: savedBytes / BYTES_PER_MEGABYTE,
+    savedPercentage: totalOriginalBytes === 0 ? 0 : (savedBytes / totalOriginalBytes) * 100,
+    timeTaken
   }
 }
 
-function error(...args: any[]) {
-  if (!isSilent) {
-    console.error(...args)
+export async function compressImages(options: CompressionOptions): Promise<CompressionResult> {
+  if (!options || typeof options.directory !== 'string' || options.directory.trim() === '') {
+    throw new TypeError('directory 必须是非空字符串')
   }
-}
 
-// 获取文件大小（MB）
-function getFileSizeInMB(filePath: string) {
-  const stats = fs.statSync(filePath)
-  return stats.size / (1024 * 1024)
-}
-
-// 获取文件大小的友好显示
-function formatFileSize(sizeInMB: number) {
-  if (sizeInMB < 1) {
-    return `${(sizeInMB * 1024).toFixed(0)}KB`
+  const logger = new Logger(options.silent ?? false, options.color)
+  const directory = path.resolve(options.directory)
+  const concurrency = resolveConcurrency(options.concurrency)
+  const profile = options.profile ?? 'max'
+  if (profile !== 'max' && profile !== 'balanced') {
+    throw new TypeError("profile 必须是 'max' 或 'balanced'")
   }
-  return `${sizeInMB.toFixed(2)}MB`
-}
-
-// 重置统计数据
-function resetStats() {
-  totalFiles = 0
-  compressedFiles = 0
-  skippedFiles = 0
-  totalOriginalSize = 0
-  totalCompressedSize = 0
-}
-
-// 压缩单个图片
-async function compressImage(inputPath: string, indent = '') {
-  const ext = path.extname(inputPath).toLowerCase()
-  const originalSize = getFileSizeInMB(inputPath)
-  const tempPath = inputPath + '.tmp'
-
-  totalFiles++
-  totalOriginalSize += originalSize
-
-  // 跳过已经很小的图片（小于50KB）
-  if (originalSize < 0.05) {
-    skippedFiles++
-    totalCompressedSize += originalSize
-    log(
-      `${indent}⏭️  ${path.basename(inputPath)} - ${formatFileSize(originalSize)} (已经很小，跳过)`
-    )
-    return
-  }
+  logger.start(options.directory)
 
   try {
-    let sharpInstance = sharp(inputPath)
-    const metadata = await sharpInstance.metadata()
-
-    // 根据不同格式采用不同的压缩策略
-    switch (ext) {
-      case '.jpg':
-      case '.jpeg':
-        await sharpInstance
-          .jpeg({
-            quality: 80,
-            progressive: true,
-            mozjpeg: true,
-            force: true
-          })
-          .toFile(tempPath)
-        break
-
-      case '.png':
-        // 对于PNG，先尝试转换为JPEG（如果不需要透明度）
-        if (!metadata.hasAlpha) {
-          await sharpInstance
-            .jpeg({
-              quality: 85,
-              progressive: true,
-              mozjpeg: true
-            })
-            .toFile(tempPath.replace('.tmp', '.jpg.tmp'))
-
-          // 比较大小，选择更小的
-          if (fs.existsSync(tempPath.replace('.tmp', '.jpg.tmp'))) {
-            const jpegSize = getFileSizeInMB(tempPath.replace('.tmp', '.jpg.tmp'))
-            if (jpegSize < originalSize * 0.8) {
-              fs.renameSync(tempPath.replace('.tmp', '.jpg.tmp'), tempPath)
-            } else {
-              fs.unlinkSync(tempPath.replace('.tmp', '.jpg.tmp'))
-              // 使用PNG压缩
-              await sharpInstance
-                .png({
-                  quality: 85,
-                  compressionLevel: 9,
-                  palette: true,
-                  effort: 10
-                })
-                .toFile(tempPath)
-            }
-          }
-        } else {
-          // 有透明度，使用PNG压缩
-          await sharpInstance
-            .png({
-              quality: 85,
-              compressionLevel: 9,
-              palette: true,
-              effort: 10
-            })
-            .toFile(tempPath)
-        }
-        break
-
-      case '.webp':
-        await sharpInstance
-          .webp({
-            quality: 80,
-            effort: 6,
-            lossless: false,
-            nearLossless: false,
-            smartSubsample: true
-          })
-          .toFile(tempPath)
-        break
-
-      case '.gif':
-        // 静态GIF转换为WebP
-        if (!metadata.pages || metadata.pages === 1) {
-          await sharpInstance
-            .webp({
-              quality: 85,
-              effort: 6
-            })
-            .toFile(tempPath.replace('.gif', '.webp'))
-
-          if (fs.existsSync(tempPath.replace('.gif', '.webp'))) {
-            fs.renameSync(tempPath.replace('.gif', '.webp'), tempPath)
-          }
-        } else {
-          // 动画GIF保持原样
-          skippedFiles++
-          totalCompressedSize += originalSize
-          log(
-            `${indent}⏭️  ${path.basename(inputPath)} - ${formatFileSize(
-              originalSize
-            )} (动画GIF，跳过)`
-          )
-          return
-        }
-        break
-
-      case '.avif':
-        await sharpInstance
-          .avif({
-            quality: 75,
-            effort: 6,
-            lossless: false
-          })
-          .toFile(tempPath)
-        break
-    }
-
-    // 检查压缩结果
-    if (fs.existsSync(tempPath)) {
-      const compressedSize = getFileSizeInMB(tempPath)
-
-      // 只有当压缩后文件更小时才替换
-      if (compressedSize < originalSize * 0.95) {
-        // 至少减少5%
-        fs.renameSync(tempPath, inputPath)
-        const savedSize = originalSize - compressedSize
-        const savedPercentage = ((savedSize / originalSize) * 100).toFixed(1)
-
-        totalCompressedSize += compressedSize
-        compressedFiles++
-
-        log(
-          `${indent}✅ ${path.basename(inputPath)} - ${formatFileSize(
-            originalSize
-          )} → ${formatFileSize(compressedSize)} (节省 ${savedPercentage}%)`
-        )
-      } else {
-        // 压缩效果不好，保持原文件
-        fs.unlinkSync(tempPath)
-        totalCompressedSize += originalSize
-        skippedFiles++
-        log(
-          `${indent}⏭️  ${path.basename(inputPath)} - ${formatFileSize(
-            originalSize
-          )} (已优化，跳过)`
-        )
-      }
-    }
-  } catch (err: any) {
-    // 清理临时文件
-    if (fs.existsSync(tempPath)) {
-      fs.unlinkSync(tempPath)
-    }
-    totalCompressedSize += originalSize
-    error(`${indent}❌ ${path.basename(inputPath)} - 压缩失败: ${err.message}`)
+    await access(directory, constants.R_OK | constants.W_OK)
+    if (!(await stat(directory)).isDirectory()) throw new Error(`路径不是目录: ${directory}`)
+  } catch (error) {
+    const message =
+      error instanceof Error && error.message.startsWith('路径不是目录')
+        ? error.message
+        : `目录不存在或不可访问: ${directory}`
+    logger.fatal(message)
+    throw new Error(message, { cause: error })
   }
+
+  const startTime = performance.now()
+  const imageFiles = await collectImageFiles(directory)
+  const memoryBudget = new MemoryBudget()
+  const results = await mapWithConcurrency(imageFiles, concurrency, async (filePath) => {
+    const result = await optimizeImage(filePath, memoryBudget, profile)
+    logger.file(directory, result)
+    return result
+  })
+  const summary = summarize(results, (performance.now() - startTime) / 1000)
+  logger.summary(summary)
+  return summary
 }
 
-// 递归处理目录
-async function processDirectory(dirPath: string, baseDir: string, depth = 0) {
-  const files = fs.readdirSync(dirPath)
-  const currentIndent = '  '.repeat(depth)
-  const fileIndent = '  '.repeat(depth + 1)
-
-  // 获取相对路径用于显示
-  const relativePath = path.relative(baseDir, dirPath)
-
-  // 只在非根目录时显示目录名
-  if (depth > 0) {
-    log(`${currentIndent}📁 ${relativePath || path.basename(baseDir)}/`)
-  }
-
-  // 先处理文件
-  const imageFiles: string[] = []
-  const subdirs: string[] = []
-
-  for (const file of files) {
-    const filePath = path.join(dirPath, file)
-    const stat = fs.statSync(filePath)
-
-    if (stat.isDirectory()) {
-      subdirs.push(file)
-    } else if (stat.isFile()) {
-      const ext = path.extname(file).toLowerCase()
-      if (imageExtensions.includes(ext)) {
-        imageFiles.push(filePath)
-      }
-    }
-  }
-
-  // 处理图片文件
-  for (const filePath of imageFiles) {
-    await compressImage(filePath, fileIndent)
-  }
-
-  // 处理子目录
-  for (const subdir of subdirs) {
-    const subdirPath = path.join(dirPath, subdir)
-    // 如果当前目录有文件或下一个目录有内容，添加空行
-    if (imageFiles.length > 0 || depth === 0) {
-      log('')
-    }
-    await processDirectory(subdirPath, baseDir, depth + 1)
-  }
-}
-
-// 主函数 - 导出供外部使用
-async function compressImages(options: CompressionOptions): Promise<CompressionResult> {
-  const { directory, silent = false } = options
-  isSilent = silent
-  
-  // 重置统计数据
-  resetStats()
-  
-  const imagesDir = path.isAbsolute(directory) 
-    ? directory 
-    : path.join(process.cwd(), directory)
-  
-  log(`🚀 开始优化图片... (目录: ${directory})\n`)
-
-  // 检查目录是否存在
-  if (!fs.existsSync(imagesDir)) {
-    const errorMsg = `目录不存在: ${imagesDir}`
-    error(`\n❌ 错误：${errorMsg}`)
-    error(`   请确认目录路径是否正确\n`)
-    throw new Error(errorMsg)
-  }
-
-  const startTime = Date.now()
-
-  try {
-    log(`📁 ${path.basename(directory)}/`)
-    await processDirectory(imagesDir, imagesDir, 0)
-
-    const endTime = Date.now()
-    const timeTaken = ((endTime - startTime) / 1000)
-    const savedSize = totalOriginalSize - totalCompressedSize
-    const savedPercentage = totalOriginalSize > 0 
-      ? ((savedSize / totalOriginalSize) * 100) 
-      : 0
-
-    log('\n' + '─'.repeat(60))
-    log('📊 优化结果汇总\n')
-    log(`  扫描文件: ${totalFiles} 个`)
-    log(`  优化成功: ${compressedFiles} 个`)
-    log(`  跳过文件: ${skippedFiles} 个`)
-    log(`  处理失败: ${totalFiles - compressedFiles - skippedFiles} 个\n`)
-    log(`  原始大小: ${formatFileSize(totalOriginalSize)}`)
-    log(`  优化后: ${formatFileSize(totalCompressedSize)}`)
-    log(
-      `  节省空间: ${formatFileSize(savedSize)} (${savedPercentage.toFixed(1)}%)\n`
-    )
-    log(`  用时: ${timeTaken.toFixed(1)}秒`)
-    log('─'.repeat(60))
-
-    return {
-      totalFiles,
-      compressedFiles,
-      skippedFiles,
-      failedFiles: totalFiles - compressedFiles - skippedFiles,
-      totalOriginalSize,
-      totalCompressedSize,
-      savedSize,
-      savedPercentage,
-      timeTaken
-    }
-  } catch (err) {
-    error('❌ 处理过程中出错:', err)
-    throw err
-  }
-}
-
-// 导出
-export { 
-  compressImages, 
-  compressImages as default, 
-  CompressionResult, 
-  CompressionOptions 
-}
+export default compressImages
+export type { CompressionOptions, CompressionResult } from './types'
